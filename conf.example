@@ -13,6 +13,18 @@ tenancy=ocid1.tenancy.oc1..xxx
 region=ap-osaka-1
 compartment_id=ocid1.compartment.oc1..xxx
 key_file=./osaka-api-key.pem
+vps_ad=xxx:AP-OSAKA-1-AD-1
+vps_subnet_id=ocid1.subnet.oc1..xxx
+vps_image_arm=ocid1.image.oc1..armxxx
+vps_image_amd=ocid1.image.oc1..amdxxx
+vps_shape_arm=VM.Standard.A1.Flex
+vps_shape_amd=VM.Standard.E4.Flex
+vps_ocpus_arm=1
+vps_memory_gb_arm=6
+vps_ocpus_amd=1
+vps_memory_gb_amd=1
+vps_ssh_keys=ssh-rsa AAAA... user@host
+vps_boot_volume_gb=50
 
 # OCI Account 2 (optional)
 [singapore]
@@ -22,3 +34,15 @@ tenancy=ocid1.tenancy.oc1..xxx
 region=ap-singapore-1
 compartment_id=ocid1.compartment.oc1..xxx
 key_file=./singapore-api-key.pem
+vps_ad=xxx:AP-SINGAPORE-1-AD-1
+vps_subnet_id=ocid1.subnet.oc1..xxx
+vps_image_arm=ocid1.image.oc1..armxxx
+vps_image_amd=ocid1.image.oc1..amdxxx
+vps_shape_arm=VM.Standard.A1.Flex
+vps_shape_amd=VM.Standard.E4.Flex
+vps_ocpus_arm=1
+vps_memory_gb_arm=6
+vps_ocpus_amd=1
+vps_memory_gb_amd=1
+vps_ssh_keys=ssh-rsa AAAA... user@host
+vps_boot_volume_gb=50

@@ -38,6 +38,17 @@ type AutoApplyConfig struct {
 	ChatID          int64              // Chat ID to send notifications
 }
 
+// AutoVPSConfig stores auto-VPS task settings
+type AutoVPSConfig struct {
+	AccountName string             // Selected account
+	Arch        string             // "arm" or "amd"
+	IntervalMin int                // Min interval seconds
+	IntervalMax int                // Max interval seconds
+	Active      bool               // Is auto-VPS running
+	Cancel      context.CancelFunc // To stop the task
+	ChatID      int64              // Chat ID to send notifications
+}
+
 // AutoApplyWizard tracks the wizard setup state
 type AutoApplyWizard struct {
 	Step            int // Current step: 1=account, 2=purity, 3=native, 4=mode, 5=interval
@@ -46,6 +57,14 @@ type AutoApplyWizard struct {
 	NativeRequired  string
 	MatchMode       string
 	ChatID          int64
+}
+
+// AutoVPSWizard tracks the VPS wizard setup state
+type AutoVPSWizard struct {
+	Step        int // Current step: 1=account, 2=arch, 3=interval, 4=confirm
+	AccountName string
+	Arch        string
+	ChatID      int64
 }
 
 // Bot represents the Telegram bot
@@ -59,6 +78,8 @@ type Bot struct {
 	purityCache   map[string]*IPPurityCache // IP -> purity info cache
 	autoApply     *AutoApplyConfig          // Auto-apply task config
 	autoWizard    *AutoApplyWizard          // Auto-apply wizard state
+	autoVPS       *AutoVPSConfig            // Auto-VPS task config
+	vpsWizard     *AutoVPSWizard            // Auto-VPS wizard state
 }
 
 // New creates a new Telegram bot
@@ -98,7 +119,9 @@ func New(cfg *config.Config) (*Bot, error) {
 		{Command: "delip", Description: "删除IP"},
 		{Command: "checkip", Description: "检测IP纯净度"},
 		{Command: "autoip", Description: "自动刷IP"},
+		{Command: "autovps", Description: "自动申请VPS"},
 		{Command: "stopauto", Description: "停止自动刷IP"},
+		{Command: "stopvps", Description: "停止自动申请VPS"},
 		{Command: "help", Description: "帮助"},
 	}
 	cmdConfig := tgbotapi.NewSetMyCommands(commands...)
@@ -176,6 +199,8 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.checkIPFromCallback(cb.Message.Chat.ID, param)
 	case "autoip":
 		b.handleAutoIPCallback(cb.Message.Chat.ID, param, parts)
+	case "autovps":
+		b.handleAutoVPSCallback(cb.Message.Chat.ID, param, parts)
 	}
 }
 
@@ -191,11 +216,17 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	if !msg.IsCommand() {
 		b.mu.Lock()
 		wizard := b.autoWizard
+		vpsWizard := b.vpsWizard
 		b.mu.Unlock()
 
 		if wizard != nil && wizard.Step == 5 {
 			// Expecting interval input
 			b.handleIntervalInput(msg.Chat.ID, msg.Text)
+			return
+		}
+		if vpsWizard != nil && vpsWizard.Step == 3 {
+			// Expecting interval input
+			b.handleVPSIntervalInput(msg.Chat.ID, msg.Text)
 			return
 		}
 
@@ -235,8 +266,12 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		}
 	case "autoip":
 		b.startAutoIPWizard(msg.Chat.ID)
+	case "autovps":
+		b.startAutoVPSWizard(msg.Chat.ID)
 	case "stopauto":
 		b.stopAutoApply(msg.Chat.ID)
+	case "stopvps":
+		b.stopAutoVPS(msg.Chat.ID)
 	case "id":
 		b.reply(msg.Chat.ID, fmt.Sprintf("Your ID: %d", msg.From.ID))
 	default:
@@ -253,6 +288,8 @@ func (b *Bot) handleHelp(chatID int64) {
 /checkip <IP> - 检测IP纯净度
 /autoip - 自动刷IP
 /stopauto - 停止自动刷IP
+/autovps - 自动申请VPS
+/stopvps - 停止自动申请VPS
 
 📍 *当前:* [%s] %s`, b.currentClient.AccountName(), b.currentClient.Region())
 
@@ -1206,4 +1243,394 @@ func (b *Bot) waitInterval(ctx context.Context, config *AutoApplyConfig) {
 		return
 	case <-time.After(time.Duration(interval) * time.Second):
 	}
+}
+
+// ========== Auto-VPS Wizard ==========
+
+func (b *Bot) startAutoVPSWizard(chatID int64) {
+	b.mu.Lock()
+	if b.autoVPS != nil && b.autoVPS.Active {
+		b.mu.Unlock()
+		b.reply(chatID, "⚠️ 自动申请VPS任务正在运行中\n使用 /stopvps 停止当前任务")
+		return
+	}
+
+	b.vpsWizard = &AutoVPSWizard{
+		Step:   1,
+		ChatID: chatID,
+	}
+	b.mu.Unlock()
+
+	var buttons [][]tgbotapi.InlineKeyboardButton
+	for name, client := range b.clients {
+		label := fmt.Sprintf("%s (%s)", name, client.Region())
+		btn := tgbotapi.NewInlineKeyboardButtonData(label, "autovps:account:"+name)
+		buttons = append(buttons, []tgbotapi.InlineKeyboardButton{btn})
+	}
+	cancelBtn := tgbotapi.NewInlineKeyboardButtonData("❌ 取消", "autovps:cancel:")
+	buttons = append(buttons, []tgbotapi.InlineKeyboardButton{cancelBtn})
+
+	msg := tgbotapi.NewMessage(chatID, "🖥️ *自动申请VPS配置* (1/3)\n\n请选择账号:")
+	msg.ParseMode = tgbotapi.ModeMarkdown
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	b.api.Send(msg)
+}
+
+func (b *Bot) handleAutoVPSCallback(chatID int64, param string, parts []string) {
+	b.mu.Lock()
+	wizard := b.vpsWizard
+	b.mu.Unlock()
+
+	if wizard == nil {
+		b.reply(chatID, "⚠️ 请先使用 /autovps 开始配置")
+		return
+	}
+
+	if len(parts) < 3 {
+		return
+	}
+	subAction := parts[1]
+	value := parts[2]
+
+	switch subAction {
+	case "cancel":
+		b.mu.Lock()
+		b.vpsWizard = nil
+		b.mu.Unlock()
+		b.reply(chatID, "❌ 已取消自动申请VPS配置")
+	case "account":
+		b.mu.Lock()
+		wizard.AccountName = value
+		wizard.Step = 2
+		b.mu.Unlock()
+		b.showVPSArchStep(chatID)
+	case "arch":
+		b.mu.Lock()
+		wizard.Arch = value
+		wizard.Step = 3
+		b.mu.Unlock()
+		b.showVPSIntervalStep(chatID)
+	case "confirm":
+		b.startAutoVPSTask(chatID)
+	}
+}
+
+func (b *Bot) showVPSArchStep(chatID int64) {
+	buttons := [][]tgbotapi.InlineKeyboardButton{
+		{
+			tgbotapi.NewInlineKeyboardButtonData("🧮 AMD", "autovps:arch:amd"),
+			tgbotapi.NewInlineKeyboardButtonData("🧩 ARM", "autovps:arch:arm"),
+		},
+		{tgbotapi.NewInlineKeyboardButtonData("❌ 取消", "autovps:cancel:")},
+	}
+
+	msg := tgbotapi.NewMessage(chatID, "🖥️ *自动申请VPS配置* (2/3)\n\n请选择架构:")
+	msg.ParseMode = tgbotapi.ModeMarkdown
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	b.api.Send(msg)
+}
+
+func (b *Bot) showVPSIntervalStep(chatID int64) {
+	msg := tgbotapi.NewMessage(chatID, `🖥️ *自动申请VPS配置* (3/3)
+
+请输入重试间隔时间 (秒):
+
+• 输入单个数字: `+"`120`"+`
+• 或输入范围: `+"`120-180`"+` (随机等待)
+
+_直接发送消息即可_`)
+	msg.ParseMode = tgbotapi.ModeMarkdown
+	b.api.Send(msg)
+}
+
+func (b *Bot) handleVPSIntervalInput(chatID int64, text string) {
+	text = strings.TrimSpace(text)
+
+	minInterval, maxInterval, err := parseInterval(text)
+	if err != nil {
+		b.reply(chatID, "❌ "+err.Error())
+		return
+	}
+	if minInterval < 10 {
+		b.reply(chatID, "❌ 间隔时间不能小于10秒")
+		return
+	}
+
+	b.mu.Lock()
+	wizard := b.vpsWizard
+	if wizard != nil {
+		wizard.Step = 4
+	}
+	b.mu.Unlock()
+
+	b.showVPSConfirmation(chatID, minInterval, maxInterval)
+}
+
+func (b *Bot) showVPSConfirmation(chatID int64, minInterval, maxInterval int) {
+	b.mu.Lock()
+	wizard := b.vpsWizard
+	b.mu.Unlock()
+
+	if wizard == nil {
+		b.reply(chatID, "⚠️ 配置已失效，请重新使用 /autovps")
+		return
+	}
+
+	account := b.cfg.GetAccount(wizard.AccountName)
+	shape := ""
+	ocpus := float32(0)
+	memory := float32(0)
+	if account != nil {
+		if wizard.Arch == "arm" {
+			shape = account.VPSShapeArm
+			ocpus = account.VPSOCPUsArm
+			memory = account.VPSMemoryGBArm
+		} else {
+			shape = account.VPSShapeAmd
+			ocpus = account.VPSOCPUsAmd
+			memory = account.VPSMemoryGBAmd
+		}
+	}
+
+	b.mu.Lock()
+	b.autoVPS = &AutoVPSConfig{
+		AccountName: wizard.AccountName,
+		Arch:        wizard.Arch,
+		IntervalMin: minInterval,
+		IntervalMax: maxInterval,
+		ChatID:      chatID,
+	}
+	b.mu.Unlock()
+
+	intervalText := fmt.Sprintf("%d秒", minInterval)
+	if minInterval != maxInterval {
+		intervalText = fmt.Sprintf("%d-%d秒 (随机)", minInterval, maxInterval)
+	}
+
+	resourceText := shape
+	if ocpus > 0 || memory > 0 {
+		resourceText = fmt.Sprintf("%s (OCPU %.1f / 内存 %.1fGB)", shape, ocpus, memory)
+	}
+
+	text := fmt.Sprintf(`✅ *确认自动申请VPS配置*
+
+📍 *账号:* %s
+🏗️ *架构:* %s
+⚙️ *规格:* %s
+⏱ *重试间隔:* %s
+
+确认开始自动申请VPS?`, wizard.AccountName, strings.ToUpper(wizard.Arch), resourceText, intervalText)
+
+	buttons := [][]tgbotapi.InlineKeyboardButton{
+		{tgbotapi.NewInlineKeyboardButtonData("▶️ 开始申请", "autovps:confirm:")},
+		{tgbotapi.NewInlineKeyboardButtonData("❌ 取消", "autovps:cancel:")},
+	}
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = tgbotapi.ModeMarkdown
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	b.api.Send(msg)
+}
+
+func (b *Bot) startAutoVPSTask(chatID int64) {
+	b.mu.Lock()
+	config := b.autoVPS
+	if config == nil {
+		b.mu.Unlock()
+		b.reply(chatID, "⚠️ 配置已失效，请重新使用 /autovps")
+		return
+	}
+
+	client, ok := b.clients[config.AccountName]
+	if !ok {
+		b.mu.Unlock()
+		b.reply(chatID, "❌ 账号不存在: "+config.AccountName)
+		return
+	}
+
+	account := b.cfg.GetAccount(config.AccountName)
+	b.mu.Unlock()
+
+	if account == nil {
+		b.reply(chatID, "❌ 账号配置不存在: "+config.AccountName)
+		return
+	}
+	if err := account.ValidateVPSConfig(config.Arch); err != nil {
+		b.reply(chatID, "❌ VPS配置错误: "+err.Error())
+		return
+	}
+
+	b.doStartAutoVPS(chatID, client, account, config)
+}
+
+func (b *Bot) doStartAutoVPS(chatID int64, client *oci.Client, account *config.OCIAccount, config *AutoVPSConfig) {
+	b.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	config.Cancel = cancel
+	config.Active = true
+	config.ChatID = chatID
+	b.vpsWizard = nil
+	b.mu.Unlock()
+
+	b.reply(chatID, fmt.Sprintf("🚀 *自动申请VPS已启动*\n\n账号: %s\n架构: %s\n使用 /stopvps 停止", config.AccountName, strings.ToUpper(config.Arch)))
+
+	go b.runAutoVPSTask(ctx, client, account, config)
+}
+
+func (b *Bot) stopAutoVPS(chatID int64) {
+	b.mu.Lock()
+	config := b.autoVPS
+	if config == nil || !config.Active {
+		b.mu.Unlock()
+		b.reply(chatID, "⚠️ 当前没有运行中的自动申请VPS任务")
+		return
+	}
+
+	if config.Cancel != nil {
+		config.Cancel()
+	}
+	config.Active = false
+	b.autoVPS = nil
+	b.mu.Unlock()
+
+	b.reply(chatID, "⏹ 已停止自动申请VPS任务")
+}
+
+func (b *Bot) runAutoVPSTask(ctx context.Context, client *oci.Client, account *config.OCIAccount, config *AutoVPSConfig) {
+	attempt := 0
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Auto-VPS task cancelled")
+			return
+		default:
+		}
+
+		attempt++
+		displayName := fmt.Sprintf("autovps-%d", time.Now().Unix())
+
+		launchDetails := b.buildVPSLaunchDetails(account, config.Arch, displayName)
+		launchCtx, launchCancel := context.WithTimeout(ctx, 3*time.Minute)
+		instance, err := client.LaunchInstance(launchCtx, launchDetails)
+		launchCancel()
+
+		if err != nil {
+			if isRetryableCapacityError(err) {
+				log.Printf("VPS capacity error (attempt %d): %s", attempt, err.Error())
+				b.waitVPSInterval(ctx, config)
+				continue
+			}
+
+			log.Printf("VPS launch failed: %s", err.Error())
+			b.reply(chatID, "❌ VPS申请失败: "+err.Error())
+			b.mu.Lock()
+			config.Active = false
+			b.autoVPS = nil
+			b.mu.Unlock()
+			return
+		}
+
+		b.mu.Lock()
+		config.Active = false
+		b.autoVPS = nil
+		b.mu.Unlock()
+
+		instanceID := ""
+		if instance.Id != nil {
+			instanceID = *instance.Id
+		}
+		shape := ""
+		if instance.Shape != nil {
+			shape = *instance.Shape
+		}
+		text := fmt.Sprintf(`🎉 *VPS申请成功!*
+
+实例ID: %s
+架构: %s
+规格: %s
+区域: %s
+尝试次数: %d`, instanceID, strings.ToUpper(config.Arch), shape, client.Region(), attempt)
+		b.replyMarkdown(config.ChatID, text)
+		return
+	}
+}
+
+func (b *Bot) buildVPSLaunchDetails(account *config.OCIAccount, arch, displayName string) oci.VPSLaunchDetails {
+	details := oci.VPSLaunchDetails{
+		AvailabilityDomain: account.VPSAvailabilityDomain,
+		SubnetID:           account.VPSSubnetID,
+		DisplayName:        displayName,
+		SSHAuthorizedKeys:  account.VPSSSHKeys,
+		BootVolumeGB:       account.VPSBootVolumeGB,
+	}
+
+	if arch == "arm" {
+		details.ImageID = account.VPSImageArm
+		details.Shape = account.VPSShapeArm
+		details.OCPUs = account.VPSOCPUsArm
+		details.MemoryGB = account.VPSMemoryGBArm
+	} else {
+		details.ImageID = account.VPSImageAmd
+		details.Shape = account.VPSShapeAmd
+		details.OCPUs = account.VPSOCPUsAmd
+		details.MemoryGB = account.VPSMemoryGBAmd
+	}
+
+	return details
+}
+
+func (b *Bot) waitVPSInterval(ctx context.Context, config *AutoVPSConfig) {
+	interval := config.IntervalMin
+	if config.IntervalMax > config.IntervalMin {
+		interval = config.IntervalMin + rand.Intn(config.IntervalMax-config.IntervalMin+1)
+	}
+
+	log.Printf("Waiting %d seconds before next VPS attempt", interval)
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(time.Duration(interval) * time.Second):
+	}
+}
+
+func parseInterval(text string) (int, int, error) {
+	if strings.Contains(text, "-") {
+		parts := strings.Split(text, "-")
+		if len(parts) != 2 {
+			return 0, 0, fmt.Errorf("格式错误，请输入: 200 或 200-300")
+		}
+		minInterval, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			return 0, 0, fmt.Errorf("无效的数字: %s", parts[0])
+		}
+		maxInterval, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return 0, 0, fmt.Errorf("无效的数字: %s", parts[1])
+		}
+		if minInterval > maxInterval {
+			minInterval, maxInterval = maxInterval, minInterval
+		}
+		return minInterval, maxInterval, nil
+	}
+
+	minInterval, err := strconv.Atoi(text)
+	if err != nil {
+		return 0, 0, fmt.Errorf("无效的数字: %s", text)
+	}
+	return minInterval, minInterval, nil
+}
+
+func isRetryableCapacityError(err error) bool {
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "outofhostcapacity") {
+		return true
+	}
+	if strings.Contains(lower, "out of host capacity") {
+		return true
+	}
+	if strings.Contains(lower, "insufficient capacity") {
+		return true
+	}
+	return false
 }
