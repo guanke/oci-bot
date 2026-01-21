@@ -16,6 +16,7 @@ import (
 // Client wraps the OCI VirtualNetwork client
 type Client struct {
 	vnClient      core.VirtualNetworkClient
+	computeClient core.ComputeClient
 	compartmentID string
 	region        string
 	accountName   string
@@ -66,10 +67,17 @@ func NewClient(acc *config.OCIAccount) (*Client, error) {
 		return nil, fmt.Errorf("failed to create VirtualNetwork client: %w", err)
 	}
 
+	computeClient, err := core.NewComputeClientWithConfigurationProvider(configProvider)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Compute client: %w", err)
+	}
+
 	vnClient.SetRegion(acc.Region)
+	computeClient.SetRegion(acc.Region)
 
 	return &Client{
 		vnClient:      vnClient,
+		computeClient: computeClient,
 		compartmentID: acc.CompartmentID,
 		region:        acc.Region,
 		accountName:   acc.Name,

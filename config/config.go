@@ -17,6 +17,19 @@ type OCIAccount struct {
 	Region        string
 	CompartmentID string
 	KeyFile       string
+	// VPS settings
+	VPSAvailabilityDomain string
+	VPSSubnetID           string
+	VPSImageArm           string
+	VPSImageAmd           string
+	VPSShapeArm           string
+	VPSShapeAmd           string
+	VPSOCPUsArm           float32
+	VPSMemoryGBArm        float32
+	VPSOCPUsAmd           float32
+	VPSMemoryGBAmd        float32
+	VPSSSHKeys            string
+	VPSBootVolumeGB       int
 }
 
 // Config holds the application configuration
@@ -89,6 +102,30 @@ func Load(filename string) (*Config, error) {
 				currentAccount.CompartmentID = value
 			case "key_file":
 				currentAccount.KeyFile = expandHome(value)
+			case "vps_ad":
+				currentAccount.VPSAvailabilityDomain = value
+			case "vps_subnet_id":
+				currentAccount.VPSSubnetID = value
+			case "vps_image_arm":
+				currentAccount.VPSImageArm = value
+			case "vps_image_amd":
+				currentAccount.VPSImageAmd = value
+			case "vps_shape_arm":
+				currentAccount.VPSShapeArm = value
+			case "vps_shape_amd":
+				currentAccount.VPSShapeAmd = value
+			case "vps_ocpus_arm":
+				currentAccount.VPSOCPUsArm = parseFloat32(value)
+			case "vps_memory_gb_arm":
+				currentAccount.VPSMemoryGBArm = parseFloat32(value)
+			case "vps_ocpus_amd":
+				currentAccount.VPSOCPUsAmd = parseFloat32(value)
+			case "vps_memory_gb_amd":
+				currentAccount.VPSMemoryGBAmd = parseFloat32(value)
+			case "vps_ssh_keys":
+				currentAccount.VPSSSHKeys = value
+			case "vps_boot_volume_gb":
+				currentAccount.VPSBootVolumeGB = parseInt(value)
 			}
 		} else {
 			// Global settings (Telegram)
@@ -167,6 +204,40 @@ func (a *OCIAccount) Validate() error {
 	return nil
 }
 
+// ValidateVPSConfig checks if VPS config is valid for the given architecture.
+func (a *OCIAccount) ValidateVPSConfig(arch string) error {
+	if a.VPSAvailabilityDomain == "" {
+		return fmt.Errorf("vps_ad is required")
+	}
+	if a.VPSSubnetID == "" {
+		return fmt.Errorf("vps_subnet_id is required")
+	}
+	if a.VPSSSHKeys == "" {
+		return fmt.Errorf("vps_ssh_keys is required")
+	}
+
+	switch arch {
+	case "arm":
+		if a.VPSImageArm == "" {
+			return fmt.Errorf("vps_image_arm is required")
+		}
+		if a.VPSShapeArm == "" {
+			return fmt.Errorf("vps_shape_arm is required")
+		}
+	case "amd":
+		if a.VPSImageAmd == "" {
+			return fmt.Errorf("vps_image_amd is required")
+		}
+		if a.VPSShapeAmd == "" {
+			return fmt.Errorf("vps_shape_amd is required")
+		}
+	default:
+		return fmt.Errorf("unsupported arch: %s", arch)
+	}
+
+	return nil
+}
+
 // GetAccount returns account by name, or first account if name is empty
 func (c *Config) GetAccount(name string) *OCIAccount {
 	if name == "" && len(c.Accounts) > 0 {
@@ -195,4 +266,26 @@ func expandHome(path string) string {
 		return strings.Replace(path, "~", home, 1)
 	}
 	return path
+}
+
+func parseFloat32(value string) float32 {
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseFloat(value, 32)
+	if err != nil {
+		return 0
+	}
+	return float32(parsed)
+}
+
+func parseInt(value string) int {
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
