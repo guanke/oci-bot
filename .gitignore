@@ -1,1 +1,5 @@
 .env
+conf
+*.pem
+b
+bot/oci-bot

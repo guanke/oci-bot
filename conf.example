@@ -1,0 +1,24 @@
+# Telegram Bot
+token=YOUR_BOT_TOKEN
+chat_id=YOUR_TELEGRAM_ID
+
+# IP Purity Check (optional, default: false)
+# auto_check_ip=true
+
+# OCI Account 1
+[osaka]
+user=ocid1.user.oc1..xxx
+fingerprint=aa:bb:cc:dd:...
+tenancy=ocid1.tenancy.oc1..xxx
+region=ap-osaka-1
+compartment_id=ocid1.compartment.oc1..xxx
+key_file=./osaka-api-key.pem
+
+# OCI Account 2 (optional)
+[singapore]
+user=ocid1.user.oc1..xxx
+fingerprint=aa:bb:cc:dd:...
+tenancy=ocid1.tenancy.oc1..xxx
+region=ap-singapore-1
+compartment_id=ocid1.compartment.oc1..xxx
+key_file=./singapore-api-key.pem
